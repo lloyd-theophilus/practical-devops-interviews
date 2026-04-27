@@ -1,0 +1,4 @@
+- A new AWS ALB config caused TLS handshakes to fail intermittently. Walk through your full RCA path.
+- Autoscaling isn’t kicking in despite the CPU crossing the threshold. What’s broken — metrics, HPA, or API server?
+- Prod users reporting 504s, but ELB health checks are green. Explain your isolation + triage process.
+- Difference between ALB and NLB and when to use which?

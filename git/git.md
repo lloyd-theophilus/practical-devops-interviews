@@ -1,1 +1,7 @@
 - How does Git merge and rebase differ internally?
+- How do you resolve merge conflicts?
+- Difference between git pull, git fetch, and git clone?
+- Use case of git stash.
+- What is the .gitignore file and how does it work?
+- What’s the difference between git rebase and git merge?
+-  What branching strategy do you follow, and how do you handle merges to avoid breaking the release branch? If a bug appears in production, what’s your approach to resolving it?

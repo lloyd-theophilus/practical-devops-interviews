@@ -1,0 +1,6 @@
+- How do you handle a situation where you're asked to work on a technology you have no experience with?
+- Describe a time when you had to work with tight deadlines and limited resources.
+- Tell me about a mistake you made in production and how you handled it.
+- Describe the most challenging technical problem you've solved in your career.
+- How would you convince stakeholders to adopt a new technology or process?
+- Tell me about a time when you had to learn a new tool quickly to solve a business problem.

@@ -1,0 +1,3 @@
+- A production RDS database is running out of storage. What immediate actions would you take to avoid downtime?
+- How do you establish a connection with databases in your deployments or infrastructure setup?
+- How do you reduce RDS cost without downtime?

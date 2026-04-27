@@ -1,0 +1,16 @@
+- Your application running on EC2 suddenly starts failing health checks behind an ALB. How would you troubleshoot the issue step by step?
+- If an S3 bucket accidentally gets deleted, how would you recover the data?
+- Your Lambda function is timing out frequently. How do you troubleshoot and optimize it?
+-  How do you securely store secrets for applications running on EC2 or Lambda?
+- Explain how you’d secure cross-region S3 replication and validate data integrity at scale.
+- How to troubleshoot SSH issues in an EC2 instance?
+- What is the difference between EBS, S3, and EFS?
+- How does IAM policy differ from IAM role?
+- Difference between security group and NACL?
+- How to set up auto-scaling for an application?
+- How do you manage and connect services like DBs, EC2, EKS, or ECS? Include the command to connect to ECS.
+- How do you create AWS Lambda functions and manage the artifacts for deployment? What options do you use to push artifacts to Lambda?
+- You have an application in Account A that needs to access an S3 bucket in Account B. How would you configure this?
+- Your EC2 instance in a private subnet needs to download packages without NAT Gateway. What alternatives exist?
+- Your EC2 instance is unreachable — how do you diagnose?
+

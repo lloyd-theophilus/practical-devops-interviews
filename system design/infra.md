@@ -1,0 +1,3 @@
+- How do you design infrastructure that empowers devs without giving them footguns?
+- Describe a hybrid cloud routing architecture between GCP and AWS. Where do you enforce boundaries?
+- How to troubleshoot high latency in API Gateway?

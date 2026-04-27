@@ -1,0 +1,10 @@
+- How to trigger a Jenkins job when code is pushed to GitHub?
+- How do you handle secrets in Jenkins pipelines?
+- Explain the CI/CD workflow you follow and the kind of pipeline you use. How do you define and invoke pipelines in Jenkins?
+- What are shared libraries in Jenkins, and how are they written and defined?
+- What kind of applications do you deploy using Jenkins pipelines, and what deployment tools do you use?
+- If the Jenkins pipeline runs but the build doesn’t happen, what possible issues could be causing it?
+- How do you use Jenkins shared libraries? Explain their typical structure and how they are integrated into your Jenkinsfiles.
+- Why choose Declarative Pipeline over Scripted Pipeline?
+- How do you integrate SonarQube into a Jenkins pipeline?
+- How do you build → containerize → push → deploy using Jenkins?

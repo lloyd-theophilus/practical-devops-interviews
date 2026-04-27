@@ -1,2 +1,15 @@
 - What happens internally when you run docker run?
 - How does Docker layer caching work? 
+- What happens when systemd hits a failing unit in a containerized node? How would you auto-recover?
+- What is the difference between an image and a container?
+- How to persist data across container restarts?
+- What is the use of docker-compose?
+- How do you check logs of a specific container?
+- How to expose a container to the outside world
+- What are the stages in a Docker image build? Why do we use ENTRYPOINT and CMD instructions?
+- Which container registry do you use for storing Docker images?
+- How do you pass environment variables during Docker build commands? What services do you use for storing Docker images?
+- Write a Dockerfile for a Node.js application with multi-stage builds.
+- How do you debug a container that has exited?
+- What's the difference between COPY and ADD commands in Dockerfile?
+- How would you handle secrets in a Docker container for a PHP application connecting to MySQL?

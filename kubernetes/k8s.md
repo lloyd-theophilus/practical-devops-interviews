@@ -7,3 +7,38 @@
 - How does Horizontal Pod Autoscaler (HPA) make scaling decisions?
 - How does Kubernetes handle pod failures and self-healing?
 - What happens during a rolling deployment in Kubernetes?
+- How would you implement fine-grained service discovery across 1000+ microservices using Envoy or Istio?
+- Explain how you’d leverage eBPF + Cilium to enforce network security policies at runtime, and what the advantages are over traditional CNIs?
+- What happens when systemd units fail intermittently on EKS nodes? How do you detect and heal?
+- Walk through advanced kube-probe configurations to detect business logic failures, not just HTTP 200.
+- Kubernetes nodes are healthy. But kubectl logs is blank for critical pods. What’s happening?
+-  A production pod was OOMKilled, but you can’t find logs. Walk through a forensic-level debug.
+- Design a multi-tenant EKS cluster with isolation across dev, QA, and prod, with no noisy neighbors.
+- What’s your approach to managing 10+ Kustomize overlays without drift or duplication?
+- Walk through your strategy to detect & mitigate pod-to-pod lateral movement inside a cluster.
+- Difference between Deployment and StatefulSet?
+- What is a DaemonSet used for?
+- How does a Service in Kubernetes work?
+- What is a ConfigMap vs Secret?
+- What are taints and tolerations?
+- How do liveness and readiness probes work?
+- How to troubleshoot a pod stuck in CrashLoopBackOff?
+- How do you create and manage Kubernetes clusters (using tools like Terraform), and what are the master and worker nodes?
+- What are common Kubernetes errors you’ve faced (like CrashLoopBackOff, ImagePullError), and how did you resolve them?
+- What is the command to access a pod and how can you define or create a Kubernetes class or object?
+- How do you handle authentication for EKS clusters and store secrets securely in your environment?
+- How do you expose a Kubernetes application to external traffic?
+- What is a ConfigMap, and how is it different from a Secret?
+- How would you implement blue-green deployment in Kubernetes?
+- How do you implement network policies to restrict pod-to-pod communication in Kubernetes?
+- A critical production Kubernetes cluster is experiencing multiple issues. Pods are stuck in ImagePullBackOff, some pods are being evicted, and users are reporting 503 errors from the application. What troubleshooting process will you follow, and how can to avoid this in the future?
+- Your Pod is restarting frequently. How do you identify the root cause?
+- A Deployment is stuck in "progressing" state — how do you troubleshoot?
+- How do you debug a CrashLoopBackOff issue?
+- How do you check which Pods are consuming high memory or CPU?
+- Node is in NotReady state — steps to investigate?
+- Your application is not accessible through service — what will you check?
+- How do you handle failed daemonset pods?
+- Persistent Volume not attaching — what’s your troubleshooting approach?
+- How do you perform rolling updates and rollbacks safely?
+- How do you perform health checks for Pods and Nodes in live environments?

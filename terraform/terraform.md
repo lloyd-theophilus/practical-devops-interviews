@@ -1,3 +1,16 @@
 - How does Terraform dependency graph (DAG) work internally?
 - How does Terraform handle state locking and consistency?
-- 
+- Terraform remote_state backend suddenly times out. What’s your recovery and damage containment strategy?
+- Your Terraform state got corrupted during a backend migration. Rebuild strategy?
+- How does Terraform maintain the state of resources?
+- What are Terraform modules?
+- How to manage sensitive variables in Terraform?
+- What is the purpose of terraform validate and terraform fmt?
+- How do you handle provisioning in different environments (dev/stage/prod)?
+- You need to import an existing AWS VPC into Terraform. What are the steps?
+- How do you manage secrets in Terraform without hardcoding them?
+- How would you implement cross-account resource provisioning using Terraform?
+- An S3 bucket was created via Terraform, but someone manually added a policy. How do you handle this drift?
+- How do you recover from a deleted Terraform state file?
+- How do you create 50 EC2 instances with different configurations (dynamic blocks)?
+- Share your screen and write a terraform code to create a VPC with all there components and create a RDS database into VPC.

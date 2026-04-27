@@ -1,1 +1,6 @@
 - What happens when your system goes down - how do you approach it?
+- Your app teams demand custom AMIs. What’s your pre-prod vetting strategy at kernel and runtime?
+- You deployed a sidecar logging agent. Suddenly, CPU throttling spikes. Diagnose and rollback.
+- Systemd journal logs vanish on reboot across some AMIs. What do you check in the image build and boot sequence?
+-  Kernel panic on a GKE node mid-deploy. How do you identify if it’s infra, base image, or app-level?
+- How do you check network connectivity between two servers?

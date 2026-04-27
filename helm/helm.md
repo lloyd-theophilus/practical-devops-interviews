@@ -1,0 +1,7 @@
+- How do you perform zero-downtime upgrades for a stateful workload using Helm 3?
+- Explain the folder structure of a basic Helm chart. What commands do you use to deploy with Helm?
+- What is email signing and Helm chart signing? Which tools do you use to sign Helm charts?
+- What are values.yaml and how do you override them?
+- How do you manage multiple environment deployments using Helm?
+- How do you debug a failed Helm release?
+- What is the difference between Helm Chart, Release, and Repository?

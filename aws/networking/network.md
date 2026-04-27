@@ -1,2 +1,7 @@
 - How does AWS Load Balancer route traffic?
 - What happens internally when you hit a CloudFront URL?
+- Netflix runs multi-cloud. Describe your approach to cross-cloud routing, IAM, and secret syncing.
+- How do you handle DNS-level outages inside a service mesh without a full app redeploy?
+- What is the purpose of a NAT Gateway?
+- How would you set up geolocation-based routing using AWS services?
+- How do you implement Auto Scaling with proper health checks?

@@ -1,0 +1,9 @@
+- What’s your Linux-level checklist before approving any custom AMI to production?
+- Bash One-liner: Find all running containers using more than 500MB RSS memory on a node.
+- How do you check running processes in Linux?
+- What’s the difference between top, htop, and ps?
+- How to schedule a cron job every 15 minutes?
+- What is the difference between hard link and soft link?
+- How to find which process is using high memory?
+- What command would you use to find files larger than 100MB?
+- Write a Python script to backup all files older than 30 days from a directory.

@@ -1,0 +1,3 @@
+- Your company wants to reduce AWS cost for idle resources. What strategies would you implement?
+- How would you implement centralized logging for multiple AWS accounts?
+- Your company's cloud costs are increasing rapidly. - How would you approach cost optimization without impacting performance?

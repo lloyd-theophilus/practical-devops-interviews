@@ -1,3 +1,9 @@
 - What happens internally in a CI/CD pipeline from commit → deploy?
 - How does a pipeline handle parallel jobs and dependencies?
 - What are the most common production mistakes in DevOps setups?
+- Explain a typical CI/CD pipeline you’ve worked on.
+- Difference between Declarative and Scripted pipeline?
+- How to pass parameters between stages?
+- What is the purpose of a webhook, and how is it used in a CI/CD pipeline?
+- Describe your typical deployment flow and CI/CD workflow. What stages do you define in your Jenkins pipeline, and how do you ensure full quality checks during deployment?
+- Describe your experience with CI/CD pipelines.
