@@ -1,0 +1,3 @@
+- How does Terraform dependency graph (DAG) work internally?
+- How does Terraform handle state locking and consistency?
+- 

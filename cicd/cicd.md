@@ -1,0 +1,3 @@
+- What happens internally in a CI/CD pipeline from commit → deploy?
+- How does a pipeline handle parallel jobs and dependencies?
+- What are the most common production mistakes in DevOps setups?

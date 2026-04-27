@@ -1,0 +1,2 @@
+- How does AWS Load Balancer route traffic?
+- What happens internally when you hit a CloudFront URL?
