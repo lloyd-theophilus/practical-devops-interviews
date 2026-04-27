@@ -4,6 +4,10 @@ A curated, community-driven collection of real-world DevOps interview questions 
 
 Every question in this repo is vetted to reflect what senior engineers and hiring managers actually ask in technical interviews.
 
+<div align="center">
+  <img src="assets/DevOps Banner.jpg" alt="Practical DevOps Interviews" width="900" />
+</div>
+
 ---
 
 ## Topics
