@@ -1,16 +1,435 @@
-- How does Terraform dependency graph (DAG) work internally?
-- How does Terraform handle state locking and consistency?
-- Terraform remote_state backend suddenly times out. What’s your recovery and damage containment strategy?
-- Your Terraform state got corrupted during a backend migration. Rebuild strategy?
-- How does Terraform maintain the state of resources?
-- What are Terraform modules?
-- How to manage sensitive variables in Terraform?
-- What is the purpose of terraform validate and terraform fmt?
-- How do you handle provisioning in different environments (dev/stage/prod)?
-- You need to import an existing AWS VPC into Terraform. What are the steps?
-- How do you manage secrets in Terraform without hardcoding them?
-- How would you implement cross-account resource provisioning using Terraform?
-- An S3 bucket was created via Terraform, but someone manually added a policy. How do you handle this drift?
-- How do you recover from a deleted Terraform state file?
-- How do you create 50 EC2 instances with different configurations (dynamic blocks)?
-- Share your screen and write a terraform code to create a VPC with all there components and create a RDS database into VPC.
+# Terraform Interview Questions & Answers
+
+---
+
+**Q: How does Terraform dependency graph (DAG) work internally?**
+
+**A:** Terraform builds a Directed Acyclic Graph (DAG) of all resources defined in configuration files. Edges in the DAG represent dependencies:
+- **Explicit**: `depends_on` meta-argument.
+- **Implicit**: reference to another resource's attribute (e.g., `aws_subnet.main.id` in an EC2 resource).
+
+During `terraform plan`/`apply`:
+1. Terraform parses all `.tf` files and builds the resource graph.
+2. It performs a topological sort — resources with no dependencies are processed first (in parallel up to `-parallelism=N`, default 10).
+3. Resources downstream in the graph wait for their dependencies to be created/updated first.
+4. For `destroy`, the graph is traversed in reverse order.
+
+`terraform graph | dot -Tsvg > graph.svg` renders the full dependency graph visually.
+
+---
+
+**Q: How does Terraform handle state locking and consistency?**
+
+**A:** State locking prevents concurrent `plan`/`apply` operations from corrupting the state file.
+
+- **S3 backend + DynamoDB**: S3 stores the state file; DynamoDB provides locking via a `LockID` item. Before any write operation, Terraform attempts to create/update the lock item. If it exists, the operation fails with a lock error (includes the lock owner's identity and timestamp).
+- **Terraform Cloud/Enterprise**: uses its own locking mechanism with run queues.
+- **Azure Blob**: uses blob lease-based locking.
+
+If a lock is orphaned (crash mid-apply), use `terraform force-unlock <LOCK_ID>` — only after confirming no other operation is running.
+
+---
+
+**Q: Terraform remote_state backend suddenly times out. What's your recovery and damage containment strategy?**
+
+**A:**
+1. **Immediate**: Stop any running `apply` to avoid partial state writes. Check if an apply is in progress via DynamoDB lock table or Terraform Cloud run queue.
+2. **Diagnose**: Check S3 bucket availability, DynamoDB endpoint reachability, VPC endpoint health (if using private endpoints), and IAM permissions.
+3. **Fallback**: Switch to a local backend temporarily:
+   ```hcl
+   terraform init -reconfigure -backend-config="path=./terraform.tfstate"
+   ```
+   Pull the last known state: `terraform state pull > terraform.tfstate`.
+4. **Restore**: Fix the backend issue (S3 throttling, DynamoDB capacity, network), re-init with the remote backend.
+5. **Prevent recurrence**: Enable S3 versioning for state recovery, set DynamoDB on-demand capacity to avoid throttling, use VPC endpoints for private access.
+
+---
+
+**Q: Your Terraform state got corrupted during a backend migration. Rebuild strategy?**
+
+**A:**
+1. **Retrieve the last good state** from S3 versioning: `aws s3api list-object-versions --bucket tf-state-bucket --prefix myapp/terraform.tfstate`.
+2. Restore: `aws s3api get-object --bucket tf-state-bucket --key myapp/terraform.tfstate --version-id <good-version> terraform.tfstate`.
+3. Push the restored state: `terraform state push terraform.tfstate`.
+4. Run `terraform plan` to verify the diff between the restored state and actual infrastructure.
+5. If state is unrecoverable: use `terraform import` for each resource to rebuild the state from scratch by importing existing infrastructure.
+6. **Lesson**: always enable S3 versioning and test state migrations in a lower environment first using `terraform state mv` rather than raw backend changes.
+
+---
+
+**Q: How does Terraform maintain the state of resources?**
+
+**A:** Terraform uses a JSON state file (`terraform.tfstate`) to map configuration resources to real-world infrastructure objects. The state contains:
+- Each resource's provider, type, name, and unique ID.
+- All attributes returned by the provider after creation.
+- Dependency metadata.
+
+On each `plan`, Terraform refreshes the state (reads current attributes from the provider API), compares them to desired configuration, and computes a diff. On `apply`, it updates the state after each resource operation.
+
+Remote backends (S3, Terraform Cloud) store state centrally for team use.
+
+---
+
+**Q: What are Terraform modules?**
+
+**A:** Modules are reusable, encapsulated units of Terraform configuration. A module is any directory with `.tf` files. There are two types:
+- **Root module**: the working directory where you run Terraform.
+- **Child module**: called from the root (or another module) via a `module {}` block.
+
+```hcl
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "5.1.2"
+  cidr    = "10.0.0.0/16"
+  azs     = ["us-east-1a", "us-east-1b"]
+}
+```
+
+Modules abstract complexity, enforce standards, and are published to the Terraform Registry. Internal company modules are stored in private registries or Git repos.
+
+---
+
+**Q: How to manage sensitive variables in Terraform?**
+
+**A:**
+- Mark variables as `sensitive = true` — Terraform redacts them in plan output and logs.
+- Store secrets in environment variables: `export TF_VAR_db_password=secret`.
+- Use AWS Secrets Manager or HashiCorp Vault with the Vault provider — fetch secrets at apply time, never hardcode.
+- **Never** commit `terraform.tfvars` containing secrets to version control. Add `*.tfvars` to `.gitignore`.
+- Use SOPS-encrypted vars files for GitOps workflows.
+
+---
+
+**Q: What is the purpose of terraform validate and terraform fmt?**
+
+**A:**
+- `terraform validate`: checks the configuration for syntactic correctness and internal consistency (e.g., invalid argument names, missing required attributes) **without** contacting the provider API. Fast and useful in CI before `plan`.
+- `terraform fmt`: formats `.tf` files to the canonical HCL style (indentation, alignment of `=` signs). `-check` flag returns a non-zero exit code if any file needs formatting — use in CI to enforce style consistency.
+
+Both are lightweight and should run in every pipeline before `terraform plan`.
+
+---
+
+**Q: How do you handle provisioning in different environments (dev/stage/prod)?**
+
+**A:** Common approaches:
+1. **Workspaces**: `terraform workspace new dev/staging/prod` — separate state per workspace; single config with `terraform.workspace` conditionals. Good for small teams; state files are in the same bucket prefix.
+2. **Directory-per-environment**: `environments/dev/`, `environments/staging/`, `environments/prod/` each with their own `main.tf` and `terraform.tfvars`, calling shared modules. Cleaner separation, preferred for complex setups.
+3. **Terragrunt**: DRY wrapper that generates backend config and calls modules with environment-specific inputs from `terragrunt.hcl` files.
+
+Use separate AWS accounts per environment (AWS Organizations) with separate state buckets for strong blast-radius isolation.
+
+---
+
+**Q: You need to import an existing AWS VPC into Terraform. What are the steps?**
+
+**A:**
+1. Write the resource block in your config:
+   ```hcl
+   resource "aws_vpc" "main" {
+     cidr_block = "10.0.0.0/16"
+   }
+   ```
+2. Run the import command:
+   ```bash
+   terraform import aws_vpc.main vpc-0abc123def456
+   ```
+3. Terraform updates the state file with the VPC's current attributes.
+4. Run `terraform plan` — if there are diffs (e.g., tags not in config), add them to the config until the plan shows no changes.
+5. Repeat for all associated resources (subnets, route tables, IGW, security groups).
+
+For bulk imports (Terraform 1.5+), use `import {}` blocks in configuration for declarative imports, and `terraform plan` will preview the import.
+
+---
+
+**Q: How do you manage secrets in Terraform without hardcoding them?**
+
+**A:**
+- **Environment variables**: `TF_VAR_<name>` — Terraform picks them up without any code change.
+- **AWS Secrets Manager** (via data source):
+  ```hcl
+  data "aws_secretsmanager_secret_version" "db" {
+    secret_id = "prod/myapp/db"
+  }
+  locals {
+    db_password = jsondecode(data.aws_secretsmanager_secret_version.db.secret_string)["password"]
+  }
+  ```
+- **HashiCorp Vault provider**: fetch dynamic credentials at apply time.
+- **SOPS + age/KMS**: encrypt `secrets.tfvars`; decrypt at CI runtime.
+- Mark all sensitive outputs and variables with `sensitive = true`.
+
+---
+
+**Q: How would you implement cross-account resource provisioning using Terraform?**
+
+**A:** Use multiple provider configurations with `assume_role`:
+```hcl
+provider "aws" {
+  alias  = "account_a"
+  region = "us-east-1"
+}
+
+provider "aws" {
+  alias  = "account_b"
+  region = "us-east-1"
+  assume_role {
+    role_arn = "arn:aws:iam::222222222222:role/TerraformCrossAccountRole"
+  }
+}
+
+resource "aws_s3_bucket" "shared" {
+  provider = aws.account_b
+  bucket   = "cross-account-shared-bucket"
+}
+```
+
+The `TerraformCrossAccountRole` in Account B must have a trust policy allowing Account A's Terraform execution role to assume it. CI/CD runners in Account A assume this role via STS.
+
+---
+
+**Q: An S3 bucket was created via Terraform, but someone manually added a policy. How do you handle this drift?**
+
+**A:**
+1. Run `terraform plan` — it will detect the manual policy as drift and plan to remove/replace it.
+2. **Option A (Terraform wins)**: apply the plan to restore the desired state. Educate the team that manual changes to Terraform-managed resources are not allowed.
+3. **Option B (Manual change wins)**: add the policy to the Terraform config, then apply — no drift, no resource destruction.
+4. **Option C (Ignore)**: use `lifecycle { ignore_changes = [policy] }` if this attribute should be managed outside Terraform.
+5. **Prevention**: use SCPs (Service Control Policies) or IAM permission boundaries to restrict manual changes to production resources. Set up AWS Config rules to detect drift and alert.
+
+---
+
+**Q: How do you recover from a deleted Terraform state file?**
+
+**A:**
+1. **Restore from S3 versioning** (if enabled — and it always should be):
+   ```bash
+   aws s3api list-object-versions --bucket tf-state --prefix app/terraform.tfstate
+   aws s3api get-object --bucket tf-state --key app/terraform.tfstate --version-id <id> terraform.tfstate
+   terraform state push terraform.tfstate
+   ```
+2. **If no backup exists**: rebuild the state file by importing each resource:
+   ```bash
+   terraform import aws_instance.web i-0abc123
+   terraform import aws_vpc.main vpc-0def456
+   ```
+   This is tedious for large configs but restores Terraform's awareness of existing resources.
+3. **Prevention**: enable S3 versioning + MFA Delete; restrict `s3:DeleteObject` and `s3:DeleteObjectVersion` via S3 bucket policy.
+
+---
+
+**Q: How do you create 50 EC2 instances with different configurations (dynamic blocks)?**
+
+**A:**
+```hcl
+variable "instances" {
+  type = map(object({
+    instance_type = string
+    ami           = string
+    tags          = map(string)
+  }))
+}
+
+resource "aws_instance" "servers" {
+  for_each      = var.instances
+  ami           = each.value.ami
+  instance_type = each.value.instance_type
+  tags          = merge(each.value.tags, { Name = each.key })
+
+  dynamic "ebs_block_device" {
+    for_each = lookup(each.value, "extra_volumes", [])
+    content {
+      device_name = ebs_block_device.value.device_name
+      volume_size = ebs_block_device.value.size
+    }
+  }
+}
+```
+
+For uniform instances with count:
+```hcl
+resource "aws_instance" "workers" {
+  count         = 50
+  ami           = "ami-0abcdef1234567890"
+  instance_type = "t3.medium"
+  tags          = { Name = "worker-${count.index + 1}" }
+}
+```
+
+`for_each` is preferred over `count` when instances have unique configurations because adding/removing one instance doesn't shift the indexes of others.
+
+---
+
+**Q: Share your screen and write a terraform code to create a VPC with all its components and create an RDS database in VPC.**
+
+**A:**
+```hcl
+# variables.tf
+variable "region"      { default = "us-east-1" }
+variable "db_password" { sensitive = true }
+
+# main.tf
+provider "aws" { region = var.region }
+
+resource "aws_vpc" "main" {
+  cidr_block           = "10.0.0.0/16"
+  enable_dns_hostnames = true
+  tags = { Name = "main-vpc" }
+}
+
+resource "aws_internet_gateway" "igw" {
+  vpc_id = aws_vpc.main.id
+  tags   = { Name = "main-igw" }
+}
+
+resource "aws_subnet" "public" {
+  count             = 2
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.0.${count.index}.0/24"
+  availability_zone = data.aws_availability_zones.available.names[count.index]
+  map_public_ip_on_launch = true
+  tags = { Name = "public-${count.index}" }
+}
+
+resource "aws_subnet" "private" {
+  count             = 2
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.0.${count.index + 10}.0/24"
+  availability_zone = data.aws_availability_zones.available.names[count.index]
+  tags = { Name = "private-${count.index}" }
+}
+
+resource "aws_eip" "nat" { domain = "vpc" }
+
+resource "aws_nat_gateway" "nat" {
+  allocation_id = aws_eip.nat.id
+  subnet_id     = aws_subnet.public[0].id
+  tags          = { Name = "main-nat" }
+}
+
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.igw.id
+  }
+}
+
+resource "aws_route_table_association" "public" {
+  count          = 2
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public.id
+}
+
+resource "aws_route_table" "private" {
+  vpc_id = aws_vpc.main.id
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.nat.id
+  }
+}
+
+resource "aws_route_table_association" "private" {
+  count          = 2
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private.id
+}
+
+resource "aws_security_group" "rds" {
+  vpc_id = aws_vpc.main.id
+  ingress {
+    from_port   = 5432
+    to_port     = 5432
+    protocol    = "tcp"
+    cidr_blocks = [aws_vpc.main.cidr_block]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_db_subnet_group" "main" {
+  name       = "main-db-subnet-group"
+  subnet_ids = aws_subnet.private[*].id
+}
+
+resource "aws_db_instance" "postgres" {
+  identifier             = "main-postgres"
+  engine                 = "postgres"
+  engine_version         = "15.4"
+  instance_class         = "db.t3.medium"
+  allocated_storage      = 20
+  db_name                = "appdb"
+  username               = "dbadmin"
+  password               = var.db_password
+  db_subnet_group_name   = aws_db_subnet_group.main.name
+  vpc_security_group_ids = [aws_security_group.rds.id]
+  skip_final_snapshot    = false
+  multi_az               = true
+  storage_encrypted      = true
+}
+
+data "aws_availability_zones" "available" { state = "available" }
+```
+
+---
+
+**Q: Explain how you’d detect drift in IaC-managed infrastructure (Terraform, Ansible) before it affects trading or portfolio systems.**
+
+**A:** Drift in financial infrastructure is a compliance and stability risk — a manually changed security group rule or a misconfigured instance can trigger a trading halt or an audit finding. The goal is to catch drift continuously, not just at the next deploy.
+
+**Terraform drift detection**:
+
+1. **Scheduled `terraform plan` in CI (drift detection pipeline)**:
+   ```hcl
+   # .github/workflows/drift-detect.yml (runs every 30 minutes)
+   - name: Detect drift
+     run: |
+       terraform init -backend-config=prod.hccl
+       terraform plan -detailed-exitcode -out=plan.tfplan
+       # Exit code 0 = no changes, 1 = error, 2 = drift detected
+     continue-on-error: true
+
+   - name: Alert on drift
+     if: steps.detect.outputs.exitCode == ‘2’
+     run: |
+       # Post to Slack/PagerDuty with the plan diff
+       terraform show -no-color plan.tfplan | \
+         curl -X POST $SLACK_WEBHOOK -d @- ...
+   ```
+
+2. **`terraform plan -refresh-only`**: refreshes state from the provider API and shows only real-world vs state diffs (not config vs state). Faster for large configs where you only want to detect out-of-band changes.
+
+3. **AWS Config Rules + Custom Rules**:
+   - AWS Config continuously evaluates resource configurations against rules. Write custom Config rules that validate critical attributes (e.g., "all security groups on trading instances must only allow port 443 from known CIDR ranges").
+   - A drift triggers a Config compliance finding → CloudWatch Events → Lambda → PagerDuty/Jira ticket.
+
+4. **Terraform Sentinel (Enterprise) / OPA (Open Source)**:
+   - Policy-as-code prevents drift from being introduced via Terraform itself (e.g., no security group with `0.0.0.0/0` on port 22 can ever be applied).
+
+5. **AWS CloudTrail + Config Aggregator**:
+   - CloudTrail records every API call that modifies infrastructure. Set EventBridge rules to alert on `AuthorizeSecurityGroupIngress`, `ModifyDBInstance`, `PutBucketPolicy` outside of the expected CI/CD role ARN.
+   - For trading systems specifically: alert on any change to VPC route tables, security groups, or IAM policies outside of the change window.
+
+**Ansible drift detection**:
+
+1. **Ansible `--check` mode (dry-run)**:
+   ```bash
+   ansible-playbook site.yml --check --diff -i inventory/prod
+   # Shows what would change without making changes
+   # Schedule this as a cron job or CI pipeline
+   ```
+
+2. **Ansible Tower / AWX**: schedule a "drift detection" job template that runs the playbook in `--check` mode daily; reports show configuration deviations per host.
+
+3. **`ansible-lint` + custom checks**: lint playbooks for non-idempotent tasks that could cause false drift readings.
+
+**For trading/portfolio systems specifically**:
+- Define a **critical resource list**: the specific RDS instances, EC2 instances, security groups, IAM roles, and VPC route tables that, if changed, could affect trading operations.
+- Run drift detection on this subset every 5 minutes (not just daily).
+- Any detected drift on this list triggers an immediate P1 alert — not just a Slack notification — regardless of business hours.
+- Integrate drift findings with your change management system (ServiceNow, Jira): a drift finding that doesn’t match an open change ticket is automatically escalated to the security team as a potential unauthorized change.
+
