@@ -6,19 +6,19 @@ Thank you for helping grow this resource. This guide covers everything you need 
 
 ## What We Accept
 
-- New interview questions for existing topics
-- New topic folders with an initial question set (minimum 5 questions)
-- Corrections to existing questions (unclear wording, factual errors)
+- New interview questions with answers for existing topics
+- New topic folders with an initial question and answer set (minimum 5 Q&A pairs)
+- Corrections to existing questions or answers (unclear wording, factual errors, outdated information)
 - Improved structure or formatting within a topic file
 
 We do **not** accept:
-- Questions answered with a single-word or trivial definition ("What is Docker?" without depth)
+- Shallow questions or answers that rely on single-word or trivial definitions ("What is Docker?" without depth)
 - Questions that duplicate existing entries
 - Promotional content, links to paid courses, or affiliate links
 
 ---
 
-## Question Quality Bar
+## Question & Answer Quality Bar
 
 Every question must meet these criteria before it will be merged:
 
@@ -26,6 +26,35 @@ Every question must meet these criteria before it will be merged:
 2. **Vetted.** The question reflects something that is genuinely asked in real interviews, not hypothetical trivia.
 3. **Unambiguous.** The question has a clear, answerable scope — not so broad that it could mean anything.
 4. **Standalone.** Each question makes sense without needing the context of the questions around it.
+
+Every answer must meet these criteria:
+
+1. **Accurate and current.** Reflects real-world behavior of the tool or system as it exists today.
+2. **Explains the "why".** Don't just state what — explain how or why it works that way.
+3. **Practical.** Where applicable, include commands, config snippets, or concrete examples.
+4. **Concise.** Cover what matters; avoid padding. Bullet points and tables are preferred over long prose.
+
+---
+
+## Format
+
+Each entry follows this structure:
+
+```markdown
+**Q: How does X work internally?**
+
+**A:** Your answer here. Use bullet points, code blocks, or tables as needed.
+
+---
+```
+
+Code blocks should specify the language for syntax highlighting:
+
+````markdown
+```bash
+docker run -p 8080:80 nginx
+```
+````
 
 ---
 
@@ -50,23 +79,21 @@ git checkout -b new-topic/linux
 
 ### 3. Make your changes
 
-- Questions go inside the relevant `<topic>/<topic>.md` file, one question per line, as a Markdown list item:
-  ```markdown
-  - How does the Linux OOM killer decide which process to terminate?
-  ```
-- If you are adding a new topic, create a new folder and a single `.md` file inside it. Follow the naming pattern of existing folders (`lowercase`, no spaces).
-- Do not add answers inline. This repo is intentionally question-only to keep the focus on preparation and avoid answer drift.
+- Questions and answers go inside the relevant `<topic>/<topic>.md` file.
+- Follow the `**Q:**` / `**A:**` format shown above.
+- Separate each Q&A block with a `---` horizontal rule.
+- If you are adding a new topic, create a new folder and a single `.md` file inside it. Follow the naming pattern of existing folders (`lowercase`, spaces allowed for multi-word topics like `system design/`).
 
 ### 4. Commit your changes
 
 Write a clear, concise commit message:
 
 ```bash
-# Adding questions
+# Adding questions with answers
 git commit -m "feat(kubernetes): add scheduler and affinity questions"
 
-# Fixing a question
-git commit -m "fix(docker): clarify layer caching question wording"
+# Fixing a question or answer
+git commit -m "fix(docker): clarify layer caching answer"
 
 # New topic
 git commit -m "feat: add linux topic with initial question set"
@@ -75,7 +102,7 @@ git commit -m "feat: add linux topic with initial question set"
 ### 5. Open a pull request
 
 Push your branch and open a PR against `main`. In the PR description:
-- List the questions or changes you are adding
+- List the questions you are adding or changing
 - Briefly explain where the questions come from (personal interview experience, public job boards, etc.)
 
 ---
@@ -86,8 +113,9 @@ Push your branch and open a PR against `main`. In the PR description:
 |---|---|
 | Folder name | `kubernetes/`, `system design/` |
 | File name | `k8s.md`, `docker.md`, `cicd.md` |
-| Question format | Markdown list item (`- Question text here`) |
-| No trailing punctuation on questions | Preferred but not a blocker |
+| Question format | `**Q: Question text here?**` |
+| Answer format | `**A:** Answer text here.` |
+| Separator | `---` between each Q&A block |
 
 ---
 

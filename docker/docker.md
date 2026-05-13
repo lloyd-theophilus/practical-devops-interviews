@@ -225,6 +225,42 @@ In Kubernetes: `kubectl logs <pod> --previous` for the previous crash; `kubectl 
    ```
 5. Rotate secrets without rebuilding images by referencing the secrets manager at startup.
 
-- You want to enforce that all images used in the cluster must come from a trusted internal registry. How do you implement this at the policy level?
+**Q: You want to enforce that all images used in the cluster must come from a trusted internal registry. How do you implement this at the policy level?**
 
+**A:** Enforce at multiple layers so no single bypass is enough:
 
+1. **Admission control (Kubernetes)**
+   - **OPA/Gatekeeper** or **Kyverno**: write a policy that rejects any pod whose image doesn't match your registry prefix (e.g., `123456789.dkr.ecr.us-east-1.amazonaws.com/*`).
+   - Example Kyverno ClusterPolicy:
+     ```yaml
+     spec:
+       validationFailureAction: Enforce
+       rules:
+         - name: allowed-registries
+           match:
+             resources:
+               kinds: [Pod]
+           validate:
+             message: "Image must be from the internal registry."
+             pattern:
+               spec:
+                 containers:
+                   - image: "123456789.dkr.ecr.us-east-1.amazonaws.com/*"
+     ```
+
+2. **Image signing & verification**
+   - Sign images at CI push time with **Cosign** (Sigstore).
+   - Use a Kyverno/Connaisseur policy to verify the signature at admission — unsigned images are rejected even if they come from the right registry.
+
+3. **Node-level enforcement**
+   - Configure `containerd` with an `ImagePullPolicy` allowlist or use **containerd's image policy plugin** to restrict pulls to approved hosts.
+
+4. **Registry-side controls**
+   - Restrict ECR/Harbor pull credentials so worker node IAM roles / robot accounts only have pull access to the internal registry — external pulls fail for lack of credentials.
+
+5. **Network policy**
+   - Egress rules on the node/pod level can block outbound HTTPS to public registries (Docker Hub, `ghcr.io`, etc.), making it network-impossible to pull from them.
+
+Layering admission control + image signing + network egress gives defence in depth: policy blocks the request, signing proves provenance, and network prevents the pull even if both are somehow bypassed.
+
+---
