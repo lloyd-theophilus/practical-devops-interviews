@@ -433,3 +433,349 @@ data "aws_availability_zones" "available" { state = "available" }
 - Any detected drift on this list triggers an immediate P1 alert — not just a Slack notification — regardless of business hours.
 - Integrate drift findings with your change management system (ServiceNow, Jira): a drift finding that doesn’t match an open change ticket is automatically escalated to the security team as a potential unauthorized change.
 
+**Q: Terraform apply changes unexpected resources. What will you review?**
+
+**A:**
+
+1. **Re-read the plan output carefully**: `terraform plan` shows exactly what will change. If the plan shows changes you didn't intend, the cause is in the diff between your config and the current state.
+
+2. **Provider version drift**: a provider upgrade may have changed the default value of an attribute, causing Terraform to "want" to update a resource even though your config hasn't changed. Pin providers in `versions.tf`:
+   ```hcl
+   terraform {
+     required_providers {
+       aws = { source = "hashicorp/aws", version = "~> 5.0" }
+     }
+   }
+   ```
+
+3. **Out-of-band manual changes (drift)**: someone changed the resource in the console. `terraform plan -refresh-only` shows only the drift. Decide: accept it into config, or let Terraform overwrite it.
+
+4. **`for_each` / `count` index shift**: adding or removing an item in the middle of a `count`-indexed list shifts all subsequent resource addresses — Terraform plans to delete and recreate them. Switch to `for_each` with a stable key to avoid this.
+
+5. **`ignore_changes` removed**: if `lifecycle { ignore_changes = [...] }` was removed from a resource that has out-of-sync attributes, Terraform will now plan to "fix" them.
+
+6. **Data source refreshed with new results**: a `data` source returned different results (e.g., latest AMI ID changed), causing a resource referencing it to be replaced.
+
+7. **Workspace mismatch**: you're in the wrong workspace and seeing a different environment's state.
+
+8. **Module version bump**: a module upgrade changed default attribute values or resource configurations.
+
+**Safe workflow**: always run `terraform plan -out=planfile`, review the plan output line by line, and only `terraform apply planfile` after explicit review.
+
+---
+
+**Q: Write a Terraform configuration to create an EC2 instance.**
+
+**A:**
+```hcl
+# versions.tf
+terraform {
+  required_version = ">= 1.5"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+# main.tf
+provider "aws" {
+  region = var.region
+}
+
+variable "region"        { default = "us-east-1" }
+variable "instance_type" { default = "t3.micro" }
+variable "key_name"      { description = "EC2 key pair name" }
+
+data "aws_ami" "amazon_linux" {
+  most_recent = true
+  owners      = ["amazon"]
+  filter {
+    name   = "name"
+    values = ["al2023-ami-*-x86_64"]
+  }
+}
+
+resource "aws_security_group" "web" {
+  name        = "web-sg"
+  description = "Allow HTTP and SSH"
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]   # tighten to your IP in production
+  }
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_instance" "web" {
+  ami                    = data.aws_ami.amazon_linux.id
+  instance_type          = var.instance_type
+  key_name               = var.key_name
+  vpc_security_group_ids = [aws_security_group.web.id]
+
+  user_data = <<-EOF
+    #!/bin/bash
+    yum install -y httpd
+    systemctl enable --now httpd
+    echo "<h1>Hello from Terraform</h1>" > /var/www/html/index.html
+  EOF
+
+  tags = { Name = "web-server", ManagedBy = "terraform" }
+}
+
+output "public_ip" {
+  value = aws_instance.web.public_ip
+}
+```
+
+---
+
+**Q: What would you do if the Terraform state file is corrupted?**
+
+**A:** State corruption (as opposed to deletion) usually means the JSON file is malformed — a partial write during a crash, a truncated file, or a binary overwrite.
+
+**Step 1 — Don't run any Terraform commands yet.** A corrupted state + `terraform apply` = potential infrastructure destruction.
+
+**Step 2 — Restore from S3 versioning** (the standard recovery path):
+```bash
+# List versions
+aws s3api list-object-versions \
+  --bucket my-tf-state-bucket \
+  --prefix myapp/terraform.tfstate \
+  --query 'Versions[].{VersionId:VersionId,LastModified:LastModified}' \
+  --output table
+
+# Download the last known good version
+aws s3api get-object \
+  --bucket my-tf-state-bucket \
+  --key myapp/terraform.tfstate \
+  --version-id <GOOD_VERSION_ID> \
+  recovered.tfstate
+
+# Validate it's valid JSON
+python3 -m json.tool recovered.tfstate > /dev/null && echo "Valid JSON"
+
+# Push it back
+terraform state push recovered.tfstate
+```
+
+**Step 3 — If the file is partially corrupt (valid JSON but wrong data)**:
+```bash
+# Inspect the raw state
+terraform show -json | jq '.values.root_module.resources[].address'
+
+# If specific resources are corrupt, remove and re-import them
+terraform state rm aws_instance.web
+terraform import aws_instance.web i-0abc123def456
+```
+
+**Step 4 — If no version history exists** (this should never happen in a well-run repo):
+- Run `terraform plan` to see the diff between a blank state and your config.
+- Use `terraform import` for each existing resource to rebuild state.
+- This is tedious for large configs — treat "no S3 versioning" as a P1 risk to fix immediately.
+
+**Prevention**:
+- Enable S3 versioning and MFA Delete on the state bucket.
+- Use DynamoDB locking to prevent concurrent writes.
+- Regularly test state restoration in a lower environment.
+
+---
+
+**Q: How do you handle infrastructure created outside Terraform?**
+
+**A:** Infrastructure that exists in AWS but isn't in Terraform state is called "unmanaged" or "out-of-band" infrastructure. Options depend on the goal:
+
+**Option 1 — Import into Terraform (bring it under management)**:
+```bash
+# Write the resource block in your .tf file first, then import
+resource "aws_s3_bucket" "legacy" {
+  bucket = "my-legacy-bucket"
+}
+
+terraform import aws_s3_bucket.legacy my-legacy-bucket
+terraform plan   # should show no changes if config matches reality
+```
+
+For bulk imports (Terraform 1.5+), use declarative `import {}` blocks:
+```hcl
+import {
+  to = aws_s3_bucket.legacy
+  id = "my-legacy-bucket"
+}
+```
+
+**Option 2 — Reference without managing** (read-only, via data source):
+```hcl
+data "aws_s3_bucket" "existing" {
+  bucket = "my-legacy-bucket"
+}
+# Use data.aws_s3_bucket.existing.arn in other resources
+```
+This lets Terraform use the resource without owning its lifecycle.
+
+**Option 3 — Ignore it**: if the resource is truly one-off and shouldn't be in Terraform (e.g., a manually created test resource), leave it out and document why.
+
+**Prevention**:
+- Use SCPs or IAM boundaries to require all production infrastructure to be created via Terraform CI/CD (not the console or manual CLI).
+- Enable AWS Config rules to detect untagged or Terraform-unmanaged resources.
+- Run `terraform plan -refresh-only` on a schedule to surface drift automatically.
+
+---
+
+**Q: How do you prevent multiple team members from running Terraform simultaneously?**
+
+**A:** Use **state locking** — Terraform's built-in mechanism to prevent concurrent operations.
+
+**DynamoDB locking (S3 backend)**:
+```hcl
+terraform {
+  backend "s3" {
+    bucket         = "my-tf-state"
+    key            = "prod/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "terraform-state-lock"   # locking table
+    encrypt        = true
+  }
+}
+```
+
+Create the DynamoDB table:
+```bash
+aws dynamodb create-table \
+  --table-name terraform-state-lock \
+  --attribute-definitions AttributeName=LockID,AttributeType=S \
+  --key-schema AttributeName=LockID,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST
+```
+
+When a `plan`/`apply` starts, Terraform writes a lock item to DynamoDB. Any other `apply` attempt sees the lock and fails with a message showing who holds the lock and when it started.
+
+**Force-unlock** (only when lock is orphaned after a crash):
+```bash
+terraform force-unlock <LOCK_ID>   # LOCK_ID is shown in the error message
+```
+
+**Additional controls**:
+- Run Terraform exclusively from CI/CD (GitHub Actions, Jenkins) — block direct `terraform apply` from developer machines via IAM policy.
+- **Terraform Cloud / Atlantis**: provides a PR-based workflow where `apply` only happens via merge, with a built-in run queue so no two applies overlap.
+- **Serialized pipeline stages**: in Jenkins, use `lock('terraform-prod') { ... }` to serialize concurrent pipeline runs.
+
+---
+
+**Q: What is the Terraform state file and how do you troubleshoot state mismatch issues?**
+
+**A:**
+
+**What the state file is**:
+The state file (`terraform.tfstate`) is a JSON document that records Terraform's understanding of what real-world infrastructure exists. It maps each `resource "type" "name"` in your config to the actual cloud resource's ID and current attributes.
+
+```json
+{
+  "resources": [{
+    "type": "aws_instance",
+    "name": "web",
+    "instances": [{
+      "attributes": {
+        "id": "i-0abc123def456",
+        "instance_type": "t3.micro",
+        ...
+      }
+    }]
+  }]
+}
+```
+
+Terraform uses the state to:
+- Determine what already exists (no need to describe every resource on every plan).
+- Compute diffs between desired config and current state.
+- Manage resource dependencies.
+
+**Troubleshooting state mismatches**:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `terraform plan` wants to create a resource that already exists | Resource exists in cloud but not in state | `terraform import <resource> <id>` |
+| `terraform plan` wants to delete a resource that shouldn't be deleted | State has a resource that no longer exists in cloud | `terraform state rm <resource>` |
+| `terraform plan` shows constant diffs for an attribute | Provider computes/normalizes the attribute differently | Use `lifecycle { ignore_changes = [<attr>] }` |
+| Wrong resource being modified | State uses wrong resource ID | `terraform state show <resource>`, `terraform state mv` to rename |
+| Two states diverged after a team merge conflict | Two `terraform apply` ran with the same state version | Restore the canonical state from S3 versioning; replay the missing changes |
+
+```bash
+# Inspect state
+terraform state list              # all resources in state
+terraform state show aws_instance.web   # attributes of a specific resource
+
+# Reconcile drift
+terraform plan -refresh-only      # show cloud vs state diff without config diff
+
+# Fix a renamed resource without destroying and recreating
+terraform state mv aws_instance.old_name aws_instance.new_name
+```
+
+---
+
+**Q: Write a simple Terraform configuration to deploy an S3 bucket with versioning and encryption.**
+
+**A:**
+```hcl
+terraform {
+  required_providers {
+    aws = { source = "hashicorp/aws", version = "~> 5.0" }
+  }
+}
+
+provider "aws" { region = "us-east-1" }
+
+resource "aws_s3_bucket" "data" {
+  bucket = "my-app-data-bucket-20240101"
+  tags   = { Environment = "production", ManagedBy = "terraform" }
+}
+
+resource "aws_s3_bucket_versioning" "data" {
+  bucket = aws_s3_bucket.data.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "data" {
+  bucket = aws_s3_bucket.data.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "aws:kms"
+    }
+    bucket_key_enabled = true   # reduces KMS API call costs
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "data" {
+  bucket                  = aws_s3_bucket.data.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+output "bucket_arn" {
+  value = aws_s3_bucket.data.arn
+}
+```
+
+---
+
+
+

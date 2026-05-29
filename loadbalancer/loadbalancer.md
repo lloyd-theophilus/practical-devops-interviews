@@ -316,3 +316,85 @@ kubectl logs -n ingress-nginx <pod> --tail=200 | grep -E ‘error|upstream|timeo
 
 7. **For very high scale**: move from NGINX ingress to a purpose-built gateway (AWS ALB + AWS Load Balancer Controller, Kong, or Envoy Gateway) which offloads TLS termination and load balancing to purpose-built infrastructure.
 
+**Q: ALB shows healthy targets but users still face downtime. What could be wrong?**
+
+**A:** Healthy ALB targets mean the health check endpoint is responding, but that doesn't guarantee the full application is functional. Common causes:
+
+1. **Health check path is too shallow**: the `/health` endpoint returns 200 even when the DB is down or a critical dependency is broken. Fix: make the health check endpoint verify real dependencies (DB connection, cache reachability).
+
+2. **Sticky sessions routing to a bad instance**: if session affinity (sticky sessions) is enabled, some users are pinned to a degraded instance that passes the simple health check but fails for real traffic. Disable stickiness or fix the degraded instance.
+
+3. **Connection draining in progress**: a deploy is draining old targets; in-flight requests on those targets are failing. Check ALB target group "deregistration delay" — if set too low, requests are dropped mid-flight.
+
+4. **SSL/TLS mismatch at the application layer**: ALB terminates TLS and forwards plain HTTP to the target. If the app incorrectly expects HTTPS internally, it may fail requests while the TCP health check passes.
+
+5. **Application-level errors not caught by health check**: 500 errors in the business logic won't affect the health check endpoint. Check ALB access logs for `HTTPCode_Target_5XX_Count`.
+
+6. **WAF or Security Group blocking real user traffic**: the health check source IP is allowed, but user IP ranges are blocked by a WAF rule or Security Group change. Check WAF sampled requests and Security Group rules.
+
+7. **Route53 DNS TTL caching old IPs**: if a DNS change was made, old cached IPs may point to decommissioned resources. TTL expiry is required before full propagation.
+
+8. **Cross-zone load balancing disabled**: one AZ has no healthy targets, but cross-zone is off so traffic to that AZ fails. Enable cross-zone load balancing or ensure equal target distribution.
+
+```bash
+# Check for 5XX errors from targets
+aws cloudwatch get-metric-statistics \
+  --namespace AWS/ApplicationELB \
+  --metric-name HTTPCode_Target_5XX_Count \
+  --dimensions Name=LoadBalancer,Value=<alb-arn-suffix> \
+  --start-time $(date -u -v-1H +%Y-%m-%dT%H:%M:%SZ) \
+  --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
+  --period 60 --statistics Sum
+```
+
+---
+
+**Q: Ingress works internally but fails externally. What will you check?**
+
+**A:** When traffic works inside the cluster but fails from the internet, the break is in the path between the external client and the Ingress controller.
+
+**Systematic checks**:
+
+1. **DNS resolution**: does the domain resolve to the correct external IP/ALB?
+   ```bash
+   dig myapp.example.com
+   nslookup myapp.example.com 8.8.8.8
+   ```
+   Confirm the A/CNAME record points to the Ingress controller's external IP or ALB DNS name.
+
+2. **TLS/HTTPS certificate**: is the certificate valid and matching the domain?
+   ```bash
+   openssl s_client -connect myapp.example.com:443 -servername myapp.example.com
+   ```
+   Check for expired cert, self-signed cert not trusted by browsers, or missing SAN (Subject Alternative Name).
+
+3. **Security Group / Firewall rules**: the LoadBalancer Service or ALB must allow inbound 80/443 from `0.0.0.0/0`.
+   ```bash
+   aws ec2 describe-security-groups --group-ids <sg-id> \
+     --query 'SecurityGroups[].IpPermissions'
+   ```
+
+4. **Ingress controller Service type**: confirm the Ingress controller Service is `type: LoadBalancer` (not `ClusterIP`). Check it has an `EXTERNAL-IP` assigned:
+   ```bash
+   kubectl get svc -n ingress-nginx
+   ```
+
+5. **Ingress class annotation**: the Ingress resource must reference the correct class. Wrong class = the controller ignores it.
+   ```bash
+   kubectl describe ingress myapp -n production
+   # Check: "kubernetes.io/ingress.class" or "ingressClassName"
+   ```
+
+6. **Cloud LB provisioning failure**: the LoadBalancer may be stuck in "Pending" state.
+   ```bash
+   kubectl describe svc ingress-nginx-controller -n ingress-nginx
+   # Look for events like "Error creating load balancer"
+   ```
+   Common causes: IAM permissions missing, subnet not tagged with `kubernetes.io/role/elb: 1`, no available EIPs.
+
+7. **NACL blocking external traffic**: Security Groups are checked but NACLs at the subnet level may block port 443 from external IPs (especially if a NACL deny rule was added).
+
+8. **ALB annotation misconfiguration** (AWS Load Balancer Controller): verify `alb.ingress.kubernetes.io/scheme: internet-facing` is set. Without it, the ALB is internal-only.
+
+---
+

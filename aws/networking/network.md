@@ -144,3 +144,59 @@ aws autoscaling put-scaling-policy \
 - Use **ELB health checks** (not EC2) — ALB actively pings your app's `/health` endpoint; unhealthy instances are terminated and replaced.
 - Set `health-check-grace-period` long enough for your application to fully start before health checks begin.
 - Configure the ALB target group health check path, interval, threshold, and timeout to match your application's startup and response characteristics.
+
+---
+
+**Q: One Availability Zone suddenly goes down. How should the application behave?**
+
+**A:**
+A well-architected multi-AZ application should survive an AZ failure with minimal or zero user impact. Here is what should happen at each layer and what to verify if it doesn't:
+
+**Expected behavior by layer**:
+
+| Layer | Expected behavior during AZ failure |
+|---|---|
+| ALB / NLB | Automatically stops routing to targets in the failed AZ; continues sending traffic to healthy AZs |
+| Auto Scaling Group | Detects unhealthy instances in the failed AZ, launches replacements in the remaining AZs |
+| RDS Multi-AZ | Automatic failover to standby in a healthy AZ (60–120 seconds); application reconnects via the same endpoint |
+| ElastiCache (Multi-AZ) | Replica in healthy AZ promoted to primary automatically |
+| ECS / EKS | Tasks/pods in the failed AZ are rescheduled onto nodes in healthy AZs |
+
+**Pre-requisites for this to work**:
+
+1. **Subnets in multiple AZs**: the ASG must span at least 2–3 AZs (`--vpc-zone-identifier "subnet-az1,subnet-az2,subnet-az3"`).
+
+2. **ALB cross-zone load balancing**: enabled by default on ALB; verify it is on for NLB (disabled by default, costs extra per GB).
+
+3. **Min capacity**: `min-size` must be >= 2 so that if the AZ with the only running instance fails, a new one launches immediately.
+
+4. **Stateless application tier**: EC2/ECS/EKS instances must be stateless — session state stored in ElastiCache or DynamoDB, not in local memory.
+
+5. **RDS Multi-AZ enabled**: single-AZ RDS has no automatic failover. Verify:
+   ```bash
+   aws rds describe-db-instances \
+     --db-instance-identifier prod-db \
+     --query 'DBInstances[].MultiAZ'
+   ```
+
+6. **DNS TTL / connection retry**: RDS Multi-AZ failover changes the IP behind the DNS endpoint. Applications must handle reconnect (short `connect_timeout`, retry logic, or use RDS Proxy which absorbs the failover transparently).
+
+**What to monitor during an AZ event**:
+```bash
+# Check ASG activity for replacements
+aws autoscaling describe-scaling-activities --auto-scaling-group-name myapp-asg
+
+# Check ALB target health across AZs
+aws elbv2 describe-target-health \
+  --target-group-arn arn:aws:elasticloadbalancing:...:targetgroup/myapp/xxxx
+
+# Check RDS failover events
+aws rds describe-events \
+  --source-identifier prod-db \
+  --source-type db-instance \
+  --duration 60
+```
+
+**Testing**: run regular **AZ failure drills** using AWS Fault Injection Simulator (FIS) — terminate all instances in one AZ, stop network traffic to a subnet — to verify your architecture actually survives before a real failure.
+
+---

@@ -289,3 +289,197 @@ aws ec2 send-serial-console-ssh-public-key --instance-id i-xxxxx --serial-port 0
 ```
 
 Common causes: instance status check failed (hardware issue → stop/start to move to new host), OS crash (check console output for kernel panic), security group/NACL blocking access, application consuming 100% CPU (instance unresponsive), disk full causing SSH daemon to fail, SSHd service crashed.
+
+---
+
+**Q: You launched an EC2 instance but cannot access it. What will you check first?**
+
+**A:**
+Check in this order:
+
+1. **Instance state**: confirm the instance is in `running` state (not `pending`, `stopped`, or `impaired`):
+   ```bash
+   aws ec2 describe-instance-status --instance-ids i-xxxxx --include-all-instances
+   ```
+   Both **System Status Check** and **Instance Status Check** must be passing.
+
+2. **Security group**: verify port 22 (SSH) or 3389 (RDP) is open inbound from your IP:
+   ```bash
+   aws ec2 describe-security-groups --group-ids sg-xxxxx \
+     --query 'SecurityGroups[].IpPermissions'
+   ```
+
+3. **Public IP / DNS**: check the instance has a public IP (or Elastic IP if in a public subnet). Instances in private subnets require a bastion or VPN.
+
+4. **Key pair**: confirm you are using the correct `.pem` file and the right OS username (`ec2-user` for Amazon Linux, `ubuntu` for Ubuntu, `admin` for Debian, `centos` for CentOS).
+
+5. **NACL**: network ACLs are stateless — verify both inbound (port 22) and outbound (ephemeral ports 1024–65535) rules allow traffic.
+
+6. **Route table**: ensure the public subnet's route table has `0.0.0.0/0 → igw-xxxxx` (Internet Gateway). Missing this is a common oversight.
+
+7. **Console output**: if all networking looks correct, check if the OS booted successfully:
+   ```bash
+   aws ec2 get-console-output --instance-id i-xxxxx --latest
+   ```
+   Look for kernel panics, SSH daemon errors, or disk full messages.
+
+8. **SSM fallback**: if SSH is blocked or broken, use Session Manager — no port 22 needed:
+   ```bash
+   aws ssm start-session --target i-xxxxx
+   ```
+
+---
+
+**Q: Auto Scaling is creating instances repeatedly. What could be happening?**
+
+**A:**
+This is a **scale-out loop** — new instances are launched, fail health checks, get terminated, and trigger another scale-out. Common causes:
+
+1. **Instances failing health checks immediately after launch**:
+   - ALB health check path (`/health`) returns non-2xx because the application hasn't started yet → increase `health-check-grace-period` to allow full app startup.
+   - Wrong health check port or path configured on the target group.
+   - Application crashes on startup (missing env vars, secrets, DB connection failure) → check `/var/log` and `journalctl`.
+
+2. **Min capacity set too high with a resource constraint**: if desired > available capacity in the subnet (no IP addresses left, instance type capacity not available in the AZ) → ASG keeps retrying.
+
+3. **Launch template / AMI misconfiguration**: the user-data script fails, leaving the instance in a broken state → check `cloud-init-output.log` on the instance.
+
+4. **Termination protection disabled + unhealthy threshold too low**: instances marked unhealthy too aggressively (e.g., 2 consecutive failures with a 10-second interval = 20 seconds) before the app can warm up.
+
+5. **Scale-out cooldown too short**: a previous scale-out fires, instances spin up, CPU temporarily spikes again before stabilization → increase `ScaleOutCooldown`.
+
+**Diagnosis**:
+```bash
+# Check ASG activity history — shows why instances were terminated
+aws autoscaling describe-scaling-activities \
+  --auto-scaling-group-name my-asg \
+  --max-items 20
+
+# Check target group health
+aws elbv2 describe-target-health \
+  --target-group-arn arn:aws:elasticloadbalancing:...:targetgroup/myapp/xxxx
+```
+
+**Fix**: set `health-check-grace-period` to at least 2x your app startup time; fix the root cause in the application; temporarily set `min-size 0` during debugging if the loop is costing money.
+
+---
+
+**Q: CPU utilization suddenly reaches 95% in production. What will you investigate?**
+
+**A:**
+
+**Immediate triage (first 5 minutes)**:
+
+1. **Check which instance(s)**: CloudWatch → EC2 → per-instance `CPUUtilization`. Is it one instance or the whole fleet? If one instance, isolate it.
+
+2. **Check for traffic spike**: ALB → `RequestCount` and `ActiveConnectionCount` metrics. A sudden traffic surge is the most common cause.
+
+3. **SSH/SSM onto the hot instance** and identify the offending process:
+   ```bash
+   top -b -n 1 | head -20          # top CPU processes
+   ps aux --sort=-%cpu | head -10  # sorted by CPU
+   pidstat -u 1 5                  # per-process CPU over time
+   ```
+
+4. **Application logs**: look for error storms (e.g., repeated exception stack traces in a loop), slow queries generating retries, or a cron job that fired unexpectedly.
+
+5. **Memory pressure causing swap**: high swap usage forces the kernel to do extra I/O which drives up CPU (soft interrupt). Check `free -m` and `vmstat 1 5`.
+
+**Common root causes**:
+- Sudden traffic increase (organic or bot/DDoS) — verify with WAF and ALB access logs.
+- Memory leak causing GC pressure (Java/Go) — check heap metrics in APM.
+- Runaway process or cron job (e.g., a backup/compression job running at peak hours).
+- Inefficient database query doing a full table scan — check RDS `SlowQueryLog` or Performance Insights.
+- Dependency slowness causing threads to pile up waiting — check thread/connection pool metrics.
+
+**Response**:
+- If traffic spike: scale out the ASG immediately (`aws autoscaling set-desired-capacity ...`).
+- If runaway process: `kill -15 <pid>` gracefully; investigate before restarting.
+- Long-term: set a CloudWatch alarm at 80% CPU; use target-tracking Auto Scaling to scale before saturation.
+
+---
+
+**Q: Application works with IP but fails using domain name. What will you verify?**
+
+**A:**
+This is a DNS resolution issue. Work through it systematically:
+
+1. **Verify DNS resolution from the failing host**:
+   ```bash
+   nslookup myapp.example.com
+   dig myapp.example.com +short
+   # Compare the resolved IP to the expected IP
+   ```
+
+2. **Check Route 53 / DNS provider record**:
+   - Is the A/CNAME record pointing to the correct IP, ALB DNS name, or CloudFront distribution?
+   - Is the TTL very high? Old cached records from before an IP change can persist.
+   ```bash
+   aws route53 list-resource-record-sets \
+     --hosted-zone-id ZXXXXX \
+     --query "ResourceRecordSets[?Name=='myapp.example.com.']"
+   ```
+
+3. **DNS propagation**: after a DNS change, old records may be cached at recursive resolvers. Check from multiple locations:
+   ```bash
+   dig myapp.example.com @8.8.8.8     # Google's resolver
+   dig myapp.example.com @1.1.1.1     # Cloudflare's resolver
+   ```
+
+4. **SSL/TLS certificate**: if the domain resolves correctly but HTTPS fails, the cert may not cover the domain (check `curl -v https://myapp.example.com` and inspect the `CN`/`SAN` fields).
+
+5. **VPC DNS settings** (for internal services): ensure `enableDnsSupport` and `enableDnsHostnames` are `true` on the VPC. Private hosted zone must be associated with the VPC.
+
+6. **Hosts file override**: check if `/etc/hosts` on the application server has a stale override entry for the domain.
+
+7. **ALB or CloudFront alias record**: if using Route 53 alias to an ALB, verify the ALB is in the correct region and the alias target matches. A deleted/recreated ALB gets a new DNS name that the alias must be updated to point to.
+
+8. **Security groups on port 443/80**: confirm that when accessing via domain (which may resolve to a different IP than the direct EC2 IP), traffic is not hitting a different resource or being blocked by a SG rule.
+
+---
+
+**Q: CloudWatch alarms are not triggering. What will you verify?**
+
+**A:**
+Work through the alarm pipeline end-to-end:
+
+1. **Alarm state**: check the alarm's current state — `OK`, `ALARM`, or `INSUFFICIENT_DATA`.
+   ```bash
+   aws cloudwatch describe-alarms --alarm-names "my-cpu-alarm"
+   ```
+   `INSUFFICIENT_DATA` means CloudWatch isn't receiving metric data — the metric itself is missing, not a threshold issue.
+
+2. **Metric data is flowing**:
+   ```bash
+   aws cloudwatch get-metric-statistics \
+     --namespace AWS/EC2 \
+     --metric-name CPUUtilization \
+     --dimensions Name=InstanceId,Value=i-xxxxx \
+     --start-time 2024-01-01T00:00:00Z \
+     --end-time 2024-01-01T01:00:00Z \
+     --period 300 \
+     --statistics Average
+   ```
+   If no data points are returned, the metric is not being reported (e.g., instance stopped, CloudWatch agent not running for custom metrics).
+
+3. **Alarm configuration**:
+   - **Period and evaluation periods**: if the period is 5 minutes and `evaluation-periods` is 3, the condition must persist for 15 minutes before triggering. Verify this matches your expectation.
+   - **Threshold**: confirm the threshold and comparison operator are set correctly (`GreaterThanOrEqualToThreshold`, not `GreaterThanThreshold`).
+   - **Treat missing data**: if set to `missing` (default), a missing data point is not treated as a breach. Change to `breaching` if you want missing data to trigger.
+
+4. **SNS topic / action**:
+   - Verify the alarm has an action (`AlarmActions`, `OKActions`) configured.
+   - Check the SNS topic exists and has an active subscription (the email address confirmed the subscription link).
+   - Check SNS delivery status in CloudWatch: `NumberOfNotificationsFailed` on the SNS topic.
+
+5. **IAM permissions**: CloudWatch must be able to publish to the SNS topic. The SNS topic policy must allow `sns:Publish` from `cloudwatch.amazonaws.com`.
+
+6. **Custom metrics (CloudWatch agent)**: if the alarm is on a custom metric, verify the CloudWatch agent is running and configured correctly on the EC2 instance:
+   ```bash
+   systemctl status amazon-cloudwatch-agent
+   cat /opt/aws/amazon-cloudwatch-agent/logs/amazon-cloudwatch-agent.log
+   ```
+
+7. **Cross-account or cross-region**: alarms on cross-account or cross-region metrics require CloudWatch cross-account observability to be configured.
+
+---

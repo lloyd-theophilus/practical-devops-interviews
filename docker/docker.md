@@ -264,3 +264,83 @@ In Kubernetes: `kubectl logs <pod> --previous` for the previous crash; `kubectl 
 Layering admission control + image signing + network egress gives defence in depth: policy blocks the request, signing proves provenance, and network prevents the pull even if both are somehow bypassed.
 
 ---
+
+**Q: Docker container exits immediately after startup. What will you verify?**
+
+**A:** A container that exits immediately means PID 1 exited (or was killed). The exit code tells you why:
+
+| Exit Code | Meaning | Common Cause |
+|---|---|---|
+| 0 | Clean exit | The command completed successfully — but it was a one-shot command, not a long-running process |
+| 1 | Application error | Startup crash, bad config, missing dependency |
+| 125 | Docker daemon error | `docker run` itself failed (bad flags, missing image) |
+| 126 | Command not executable | Permission denied on the entrypoint |
+| 127 | Command not found | Wrong binary name in CMD/ENTRYPOINT, or binary not in PATH |
+| 137 | SIGKILL (OOMKilled) | Container exceeded memory limit |
+| 139 | Segfault | Application crash |
+| 143 | SIGTERM | Container was gracefully stopped externally |
+
+**Debugging steps**:
+```bash
+# Check exit code
+docker ps -a    # see last exit code in STATUS column
+docker inspect <container_id> | jq '.[0].State'
+
+# Read logs before exit
+docker logs <container_id>
+
+# Run interactively to see startup errors
+docker run -it --entrypoint /bin/sh <image>
+
+# Override CMD to keep container alive for inspection
+docker run -it <image> /bin/sh
+
+# For Kubernetes
+kubectl logs <pod> --previous    # logs from the terminated container
+kubectl describe pod <pod>       # check Last State exit code and reason
+```
+
+**Common root causes**:
+- **No foreground process**: the CMD/ENTRYPOINT starts a daemon that forks to the background — PID 1 exits immediately. The fix: run the process in the foreground (e.g., `nginx -g "daemon off;"`, `python -u app.py`).
+- **Missing environment variable**: app crashes at startup because a required `DB_HOST` or `API_KEY` is not set.
+- **Permission error**: the startup script isn't executable (`chmod +x entrypoint.sh`), or the app can't write to a volume mount.
+- **Wrong working directory**: `WORKDIR` is set, but a file the app needs doesn't exist there.
+- **Bad CMD syntax**: shell form vs exec form difference causing the command to be parsed incorrectly.
+
+---
+
+**Q: What is the difference between CMD and RUN in Dockerfile?**
+
+**A:**
+
+| | `RUN` | `CMD` |
+|---|---|---|
+| **When it executes** | At **build time** (creates a new image layer) | At **container start time** (runtime default command) |
+| **Purpose** | Install packages, compile code, set up the image | Define the default command the container runs |
+| **Creates layer** | Yes — persisted in the image | No — not a layer, just metadata |
+| **Can be overridden** | No (it already ran during build) | Yes — `docker run myimage <custom-cmd>` replaces CMD |
+| **Multiple allowed** | Yes (each creates a layer) | Only the last CMD takes effect |
+
+```dockerfile
+# RUN executes during docker build
+RUN apt-get update && apt-get install -y curl    # installs curl into the image layer
+RUN npm install                                   # installs dependencies into the image
+
+# CMD executes when the container starts
+CMD ["node", "server.js"]    # exec form (preferred — no shell wrapping, signals passed directly)
+CMD node server.js           # shell form (runs via /bin/sh -c — PID 1 is shell, not your process)
+```
+
+**Key distinction**:
+- `RUN` shapes **what the image contains**.
+- `CMD` shapes **what the container does by default when run**.
+
+Combined with `ENTRYPOINT`:
+```dockerfile
+ENTRYPOINT ["node"]   # always runs node
+CMD ["server.js"]     # default argument — overridable: docker run myimage debug.js
+```
+
+---
+
+

@@ -232,3 +232,141 @@ pipeline {
   }
 }
 ```
+
+**Q: Jenkins build succeeds but deployment fails. What will you verify?**
+
+**A:**
+
+1. **Helm/kubectl error in pipeline output**: read the error message — is it a connection error (kubeconfig), auth error (RBAC), resource conflict (existing resource not managed by Helm), or a timeout waiting for rollout?
+
+2. **kubeconfig / cluster access**:
+   ```bash
+   # On the Jenkins agent
+   kubectl cluster-info    # can the agent reach the cluster?
+   kubectl auth can-i create deployment -n production   # RBAC check
+   ```
+   If the agent uses an IAM role (EKS), verify the role is in the `aws-auth` ConfigMap or EKS access entries.
+
+3. **Image pull failure**: the new image was pushed to ECR, but the Kubernetes node can't pull it. Check: ECR repo policy, node IAM role has `ecr:GetAuthorizationToken` and `ecr:BatchGetImage`, image tag exists in ECR.
+
+4. **Helm release in a failed state**: a previous broken deploy left the Helm release in `failed` state — `helm upgrade` may not proceed.
+   ```bash
+   helm status myapp -n production
+   helm history myapp -n production
+   # Fix: helm rollback myapp 1 -n production  (roll back to last good revision)
+   ```
+
+5. **Resource quota exceeded**: the new deployment requests more CPU/memory than the namespace quota allows. Check: `kubectl describe namespace production | grep -A5 "Resource Quotas"`.
+
+6. **Readiness probe failure**: Helm's `--wait` flag waits for pods to become Ready. If the new pods fail readiness probes, Helm times out and returns an error even though the pods are running. Check: `kubectl describe pod <new-pod>`.
+
+7. **ConfigMap or Secret missing**: the new deployment references a ConfigMap/Secret that doesn't exist in the target namespace yet.
+
+---
+
+**Q: Deployment succeeds but users still see the old application version. Why?**
+
+**A:** A successful deployment means the new pods are running and healthy — but the user still reaching old code means something is serving cached or stale content.
+
+**Most common causes**:
+
+1. **CDN / CloudFront cache**: the CDN is serving the previous version from edge caches. Fix:
+   ```bash
+   aws cloudfront create-invalidation \
+     --distribution-id E1234ABCD \
+     --paths "/*"
+   ```
+   Add cache invalidation as a step in your pipeline after deployment.
+
+2. **Browser cache**: the user's browser has cached the old HTML/JS. Force a new cache-busting URL by versioning static assets (`app.v2.js`) or setting `Cache-Control: no-cache` on HTML responses.
+
+3. **Kubernetes service still routing to old pods**: the rolling update didn't complete — some old pods are still running.
+   ```bash
+   kubectl rollout status deployment/myapp -n production
+   kubectl get pods -n production -l app=myapp  # check all pods show the new image
+   ```
+
+4. **Sticky sessions**: the load balancer or Ingress has session affinity enabled — some users are pinned to specific (old) pods. Disable stickiness or wait for sessions to expire.
+
+5. **Multiple replicas, deployment partially rolled out**: with `maxUnavailable: 25%`, some old pods are still serving traffic. Wait for `rollout status` to show "successfully rolled out".
+
+6. **Wrong namespace deployed to**: the pipeline deployed to `staging` instead of `production`. Verify: `kubectl get deployment myapp -n production -o jsonpath='{.spec.template.spec.containers[0].image}'`.
+
+7. **DNS TTL caching**: if a DNS change was also involved, clients cache the old DNS record. Check TTL and wait.
+
+---
+
+**Q: How do you configure automatic Jenkins triggers from GitHub pushes?**
+
+**A:** The recommended approach is a **GitHub webhook** pointing to Jenkins:
+
+**Step 1 — Configure Jenkins**:
+- Install the **GitHub plugin** and **GitHub Branch Source plugin**.
+- In the Jenkins job (Freestyle or Pipeline): Build Triggers → check "GitHub hook trigger for GITScm polling".
+- For Multibranch Pipelines: the webhook is configured automatically once the GitHub org/repo is scanned.
+
+**Step 2 — Configure the GitHub webhook**:
+1. Go to the GitHub repo → Settings → Webhooks → Add webhook.
+2. **Payload URL**: `https://<jenkins-url>/github-webhook/`
+3. **Content type**: `application/json`
+4. **Secret**: set an HMAC secret; configure it in Jenkins Credentials for validation.
+5. **Events**: "Just the push event" (or add "Pull requests" for PR builds).
+
+**Step 3 — Network access**:
+- Jenkins must be reachable from GitHub's IP ranges. Check [GitHub's meta API](https://api.github.com/meta) for the `hooks` CIDR list.
+- If Jenkins is behind a firewall, use **GitHub App** authentication with a self-hosted runner, or expose Jenkins via a reverse proxy/ngrok for testing.
+
+**GitHub App approach (preferred for organisations)**:
+- Register a GitHub App, install it on the repo/org.
+- The Jenkins GitHub App plugin handles authentication with short-lived tokens and validates webhook signatures automatically.
+- More secure than PATs: scoped permissions, automatic rotation, audit trail per app.
+
+**Verify it's working**:
+```bash
+# Push a commit and check Recent Deliveries in GitHub webhook settings
+# Or trigger a test delivery from the webhook settings page
+```
+
+---
+
+**Q: Explain the deployment strategies used in your projects.**
+
+**A:**
+
+| Strategy | How it works | Downtime | Rollback speed | Use case |
+|---|---|---|---|---|
+| **Recreate** | Stop all old pods, start all new pods | Yes (brief) | Slow (redeploy old) | Dev environments, stateful apps that can't run two versions |
+| **Rolling Update** | Replace pods gradually (default in Kubernetes) | Zero (if probes are correct) | Fast (`kubectl rollout undo`) | Standard stateless services |
+| **Blue/Green** | Deploy new version alongside old; switch traffic all at once | Zero | Instant (flip selector/DNS) | High-traffic production, critical releases |
+| **Canary** | Route a small % of traffic (e.g., 5%) to the new version; expand gradually | Zero | Fast (shift 0% to new) | Risk reduction for major changes |
+| **Shadow** | New version receives a copy of real traffic but responses are discarded | Zero | N/A (no live traffic) | Pre-production validation, ML model testing |
+
+**How I use them**:
+
+- **Kubernetes Deployments**: rolling update is the default. I set `maxUnavailable: 0` and `maxSurge: 1` for zero-downtime with one extra pod during the rollout.
+
+- **Blue/Green via Argo Rollouts**:
+  ```yaml
+  strategy:
+    blueGreen:
+      activeService: myapp-active
+      previewService: myapp-preview
+      autoPromotionEnabled: false   # require manual promotion
+  ```
+
+- **Canary via Argo Rollouts + Istio**:
+  ```yaml
+  strategy:
+    canary:
+      steps:
+        - setWeight: 10    # 10% to canary
+        - pause: {duration: 5m}
+        - setWeight: 50
+        - pause: {duration: 5m}
+        - setWeight: 100
+  ```
+
+- **For Lambda**: I use **weighted aliases** — point the `prod` alias at 90% old version, 10% new version, then shift to 100% once metrics confirm stability.
+
+---
+

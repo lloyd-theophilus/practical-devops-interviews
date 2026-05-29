@@ -116,3 +116,223 @@ dist/              # ignore build output
 4. After merge to `main`, immediately backport to `develop` (or `release` branch if active) with `git cherry-pick`.
 5. Tag `main` with a patch version; trigger the CD pipeline to deploy.
 6. Post-mortem to prevent recurrence.
+
+
+**Q: Git merge succeeds but deployment starts failing. What will you investigate?**
+
+**A:** A successful merge only means the code combined without conflicts — it doesn't guarantee the result works. The failure is somewhere between the merged code and the running environment.
+
+**Investigation checklist**:
+
+1. **Check the CI/CD pipeline logs**: what stage failed? Build, test, Docker push, Helm deploy, health check?
+
+2. **Config/environment drift**: the merge may have introduced a new env var or config key that isn't set in the deployment environment. Check `diff` between the merged code's config requirements and what's in Secrets Manager / ConfigMaps.
+
+3. **Database migrations not run**: the code expects a new column or table that doesn't exist yet. Check if a migration step was skipped in the pipeline.
+
+4. **Image build vs deploy mismatch**: the CI built a new image but the Helm values or deployment manifest still references the old tag. Verify `image.tag` in the deployed manifest matches the newly built image.
+
+5. **Dependency version conflict**: the merge brought in a `package-lock.json` or `go.sum` change that introduced an incompatible library version. Check the build logs for dependency resolution warnings.
+
+6. **Test environment passed, prod fails**: env-specific config (different DB, smaller memory limit, different secrets). Compare `kubectl describe pod` between environments for missing env vars or failing probes.
+
+7. **Git blame the breakage**: `git bisect` to find the exact commit that broke the deployment. `git log --oneline -20` to see what changed.
+
+8. **Rollback immediately if impactful**: `kubectl rollout undo deployment/myapp` or trigger the previous CI pipeline run to restore the last working image while you investigate.
+
+---
+
+**Q: What is the difference between git fetch, git pull, and git rebase?**
+
+**A:**
+
+| Command | What it does | Safe? |
+|---|---|---|
+| `git fetch` | Downloads new commits/refs from the remote into `origin/<branch>` tracking branches. **Does not touch your working branch.** | Always safe |
+| `git pull` | `git fetch` + `git merge` — updates your working branch by merging the remote changes. Can create merge commits. | Safe but messy history |
+| `git pull --rebase` | `git fetch` + `git rebase` — replays your local commits on top of the fetched commits. Produces a linear history. | Safe for local branches; **never rebase shared/public branches** |
+
+**When to use each**:
+- `git fetch` + inspect + decide: the safest workflow — see what changed before acting.
+- `git pull`: quick updates on team branches where merge commits are acceptable.
+- `git rebase` (or `git pull --rebase`): keep feature branches up to date with `main` while maintaining a clean, linear history before opening a PR.
+
+**Rebase internals**: rebase detaches your commits and replays them one-by-one on top of the new base. Each replayed commit gets a new SHA — this rewrites history, which is why rebasing pushed/shared commits causes problems for other contributors.
+
+---
+
+**Q: What happens internally when you run git revert?**
+
+**A:** `git revert <commit-sha>` creates a **new commit** that undoes the changes introduced by the specified commit. It does **not** rewrite history — the original commit remains in the log.
+
+**Internals**:
+1. Git computes the inverse diff of the target commit: if the commit added a line, the revert removes it; if it removed a line, the revert adds it back.
+2. This inverse diff is applied as a new commit to the current HEAD, with a message like `"Revert 'original commit message'"`.
+3. The commit graph grows forward — the bad commit stays in history, but its effect is neutralized.
+
+```bash
+git revert abc1234          # reverts a single commit
+git revert abc1234..def5678 # reverts a range of commits (creates one revert commit per commit)
+git revert -n abc1234       # stages the revert but doesn't commit (--no-commit) — lets you combine
+```
+
+**vs `git reset`**:
+- `git revert`: safe for shared/public branches — adds a new commit, doesn't rewrite history.
+- `git reset --hard`: rewrites history by moving HEAD back — only safe for local, unpushed commits.
+
+**When to use revert**: rolling back a bad commit that was already pushed to `main` or a shared branch. It's the standard safe rollback mechanism.
+
+---
+
+**Q: How is GitHub Actions integrated with AWS in your project?**
+
+**A:** GitHub Actions authenticates to AWS using **OIDC (OpenID Connect) federation** — no long-lived AWS credentials stored in GitHub secrets.
+
+**Setup**:
+1. Create an IAM OIDC provider in AWS for GitHub Actions:
+   ```bash
+   aws iam create-open-id-connect-provider \
+     --url https://token.actions.githubusercontent.com \
+     --client-id-list sts.amazonaws.com \
+     --thumbprint-list <github-thumbprint>
+   ```
+
+2. Create an IAM role with a trust policy that allows the OIDC provider:
+   ```json
+   {
+     "Effect": "Allow",
+     "Principal": { "Federated": "arn:aws:iam::123456789:oidc-provider/token.actions.githubusercontent.com" },
+     "Action": "sts:AssumeRoleWithWebIdentity",
+     "Condition": {
+       "StringEquals": {
+         "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+         "token.actions.githubusercontent.com:sub": "repo:myorg/myrepo:ref:refs/heads/main"
+       }
+     }
+   }
+   ```
+
+3. In the workflow:
+   ```yaml
+   permissions:
+     id-token: write
+     contents: read
+
+   jobs:
+     deploy:
+       runs-on: ubuntu-latest
+       steps:
+         - uses: actions/checkout@v4
+
+         - name: Configure AWS credentials (OIDC)
+           uses: aws-actions/configure-aws-credentials@v4
+           with:
+             role-to-assume: arn:aws:iam::123456789:role/GithubActionsDeployRole
+             aws-region: us-east-1
+
+         - name: Login to ECR
+           run: aws ecr get-login-password | docker login --username AWS --password-stdin 123456789.dkr.ecr.us-east-1.amazonaws.com
+
+         - name: Build and push
+           run: |
+             docker build -t 123456789.dkr.ecr.us-east-1.amazonaws.com/myapp:${{ github.sha }} .
+             docker push 123456789.dkr.ecr.us-east-1.amazonaws.com/myapp:${{ github.sha }}
+
+         - name: Deploy to EKS
+           run: |
+             aws eks update-kubeconfig --name my-cluster --region us-east-1
+             helm upgrade --install myapp ./chart --set image.tag=${{ github.sha }}
+   ```
+
+---
+
+**Q: How do you trigger workflows manually in GitHub Actions?**
+
+**A:** Use the `workflow_dispatch` event trigger, which adds a "Run workflow" button in the GitHub Actions UI.
+
+```yaml
+# .github/workflows/deploy.yml
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options: [staging, production]
+      image_tag:
+        description: 'Docker image tag to deploy'
+        required: false
+        default: 'latest'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy ${{ inputs.image_tag }} to ${{ inputs.environment }}
+        run: |
+          echo "Deploying ${{ inputs.image_tag }} to ${{ inputs.environment }}"
+          helm upgrade --install myapp ./chart \
+            --set image.tag=${{ inputs.image_tag }} \
+            -f values-${{ inputs.environment }}.yaml
+```
+
+**Trigger via CLI**:
+```bash
+gh workflow run deploy.yml \
+  --field environment=staging \
+  --field image_tag=v1.2.3
+```
+
+**Trigger via REST API**:
+```bash
+curl -X POST \
+  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "Accept: application/vnd.github.v3+json" \
+  https://api.github.com/repos/myorg/myrepo/actions/workflows/deploy.yml/dispatches \
+  -d '{"ref":"main","inputs":{"environment":"staging","image_tag":"v1.2.3"}}'
+```
+
+Use cases: manual production deploys requiring human approval, re-deploying a specific version, triggering one-off maintenance jobs.
+
+---
+
+**Q: Explain ENTRYPOINT vs CMD in Docker with a real-time use case.**
+
+**A:**
+
+- **ENTRYPOINT**: the executable that always runs. It defines the container's purpose. Only overridable with `--entrypoint` at `docker run`.
+- **CMD**: default arguments passed to ENTRYPOINT (or the default command if no ENTRYPOINT is set). Overridable by arguments at `docker run`.
+
+**Real-time use case — database backup tool**:
+```dockerfile
+FROM python:3.12-alpine
+WORKDIR /app
+COPY backup.py .
+RUN pip install boto3 psycopg2-binary
+
+ENTRYPOINT ["python", "backup.py"]   # always run the backup script
+CMD ["--mode", "full"]               # default: full backup
+```
+
+```bash
+# Full backup (uses CMD default)
+docker run mybackup
+
+# Incremental backup (overrides CMD)
+docker run mybackup --mode incremental
+
+# Point-in-time restore (overrides CMD with different args)
+docker run mybackup --mode restore --timestamp 2024-01-15T02:00:00Z
+```
+
+The container is **a backup tool** (ENTRYPOINT) that accepts different modes (CMD overrides). You can't accidentally run a shell in it without explicitly using `--entrypoint /bin/sh`.
+
+**Contrast — no ENTRYPOINT**:
+```dockerfile
+CMD ["python", "backup.py", "--mode", "full"]
+```
+Now `docker run mybackup /bin/sh` silently replaces the whole CMD with `/bin/sh` — the container becomes a shell. ENTRYPOINT prevents this accidental misuse.
+
+---
+

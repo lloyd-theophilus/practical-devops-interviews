@@ -110,3 +110,45 @@ ipvsadm -C   # flush IPVS table; kube-proxy will repopulate
    - Add Interface Endpoints for high-traffic AWS services.
    - Fix the logging/telemetry runaway if applicable.
    - Use AWS Cost Anomaly Detection with an alert threshold to catch this automatically next time.
+
+**Q: SSL certificate suddenly expires in production. What impact can happen?**
+
+**A:**
+
+**Immediate impact**:
+- **HTTPS connections fail**: browsers show "NET::ERR_CERT_DATE_INVALID" or "Your connection is not private" — users cannot access the site. Modern browsers block the connection entirely; they don't let users bypass the warning for most sites.
+- **API clients fail**: services, mobile apps, and third-party integrations calling your HTTPS endpoints receive TLS handshake errors and stop working. This cascades to any downstream system depending on your API.
+- **CDN / WAF breaks**: if CloudFront or an upstream proxy terminates TLS with your cert, it will reject the connection or serve an error page.
+- **Monitoring blind spots**: health checks over HTTPS also fail, which may trigger false alerts or, worse, silence real alerts if the monitoring tool itself can't reach the endpoint.
+
+**Secondary impact**:
+- Revenue loss (e-commerce, SaaS) from the moment users can't access the site.
+- Trust damage — users who see the certificate error may not return even after the fix.
+- SLA breaches if the service has uptime guarantees.
+- Compliance issues if the expired cert is part of mTLS between internal services — internal service mesh traffic may fail too.
+
+**Immediate remediation**:
+```bash
+# Check current cert expiry for any domain
+openssl s_client -connect example.com:443 -servername example.com 2>/dev/null \
+  | openssl x509 -noout -dates
+
+# ACM cert renewal (if managed by AWS)
+aws acm describe-certificate --certificate-arn <arn> \
+  --query 'Certificate.{Status:Status,NotAfter:NotAfter}'
+# ACM auto-renews if DNS or email validation is set up — check why auto-renewal failed
+```
+
+**Fix**:
+1. **ACM**: if the cert is in ACM and auto-renewal failed, check that DNS validation records (CNAME) still exist in Route53. Re-trigger validation if needed. ACM renewed certs deploy to ALB/CloudFront automatically.
+2. **Let's Encrypt / certbot**: run `certbot renew --force-renewal`; restart the web server.
+3. **Third-party CA**: generate a CSR, submit to the CA, install the new cert chain on the load balancer or server.
+
+**Prevention**:
+- Use ACM for AWS-managed services — it auto-renews.
+- For non-ACM certs: set CloudWatch alarms or Datadog monitors on certificate expiry (30-day and 7-day warnings).
+- Use a tool like `cert-manager` in Kubernetes to automate Let's Encrypt renewal.
+- Audit all certs with a scheduled Lambda that checks expiry dates across all domains and sends alerts.
+
+---
+
